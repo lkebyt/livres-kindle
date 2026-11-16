@@ -1,0 +1,78 @@
+# Chaîne livres : SeerrNG (demandes) -> ChaptarrNG (gestion) -> Prowlarr/qBittorrent (recherche, téléchargement)
+# -> kindle-sender (envoi sur la Kindle du demandeur). Voir README.md.
+name: livres-kindle
+
+x-commun: &commun
+  restart: unless-stopped
+  environment: &env
+    TZ: ${TZ:-Europe/Paris}
+    PUID: ${PUID:-1000}
+    PGID: ${PGID:-1000}
+
+services:
+  seerrng:
+    <<: *commun
+    # Version épinglée : les correctifs de seerrng/patches.js visent exactement cette image.
+    image: ghcr.io/snapetech-org/seerrng@sha256:a4060bc92f5c850c549b10625f9f429f4fc323d555e1aaf3e067838f574a8582
+    command: ["sh", "-c", "node /patches.js && exec node dist/index.js"]
+    environment: { TZ: "${TZ:-Europe/Paris}", LOG_LEVEL: info }
+    volumes:
+      - ./data/seerr:/app/config
+      - ./seerrng/patches.js:/patches.js:ro
+    ports: ["${SEERR_PORT:-5055}:5055"]
+
+  chaptarrng:
+    <<: *commun
+    # v0.9.1000 épinglée : kindle-sender et les correctifs SeerrNG contournent ses bugs.
+    image: ghcr.io/snapetech-org/chaptarrng@sha256:6e21b746153449922d3e36d9275232b2646f7b62858d960ef3ab83db0c7701a9
+    volumes:
+      - ./data/chaptarr:/config
+      - ${LIVRES_DIR:-./data/livres}:/ebooks
+      - ${TELECHARGEMENTS_DIR:-./data/telechargements}:/downloads
+    ports: ["127.0.0.1:8789:8789"]
+
+  prowlarr:
+    <<: *commun
+    image: lscr.io/linuxserver/prowlarr:latest
+    volumes: [./data/prowlarr:/config]
+    ports: ["127.0.0.1:9696:9696"]
+
+  flaresolverr:
+    <<: *commun
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+
+  qbittorrent:
+    <<: *commun
+    image: lscr.io/linuxserver/qbittorrent:latest
+    environment: { <<: *env, WEBUI_PORT: 8080 }
+    volumes:
+      - ./data/qbittorrent:/config
+      - ${TELECHARGEMENTS_DIR:-./data/telechargements}:/downloads   # même chemin que dans ChaptarrNG
+      - ./qbittorrent/init.sh:/custom-cont-init.d/10-livres-kindle:ro
+    ports: ["127.0.0.1:8080:8080", "6881:6881", "6881:6881/udp"]
+
+  kindle-sender:
+    <<: *commun
+    image: python:3.13-alpine
+    command: ["python", "-u", "/app/sender.py"]
+    env_file: .env
+    environment:
+      PROWLARR_URL: http://prowlarr:9696
+    volumes:
+      - ./kindle-sender:/app:ro
+      - ./config:/config                       # kindle.json, titres_fr.json, état
+      - ./data/seerr:/data/seerr:ro            # clés API lues dans les configs des services
+      - ./data/chaptarr:/data/chaptarr:ro
+      - ./data/prowlarr:/data/prowlarr:ro
+      - ${LIVRES_DIR:-./data/livres}:/ebooks:ro
+
+  # docker compose run --rm setup  (à relancer sans risque après chaque étape manuelle)
+  setup:
+    image: python:3.13-alpine
+    profiles: [setup]
+    command: ["python", "-u", "/app/setup.py"]
+    volumes:
+      - ./kindle-sender:/app:ro
+      - ./data/seerr:/data/seerr:ro
+      - ./data/chaptarr:/data/chaptarr:ro
+      - ./data/prowlarr:/data/prowlarr:ro

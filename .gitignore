@@ -1,0 +1,6 @@
+.env
+data/
+config/kindle.json
+config/livres_fr_state.json
+config/kindle_off
+__pycache__/
